@@ -2,12 +2,8 @@ venv/
 __pycache__/
 *.pyc
 .DS_Store
-<<<<<<< HEAD
 datasets/
 models/*.h5
 *.h5
 
 
-=======
-venv/
->>>>>>> parent of d04d8cef (Updated CNN / EFFICIENTNETB7 MODEL)

@@ -98,57 +98,24 @@ def load_and_preprocess_images(directory, label, img_size=224):
     return images, labels
 
 def create_improved_model(input_shape=(224, 224, 3), num_classes=3):
-    """Create improved CNN with residual connections and attention mechanisms"""
     inputs = layers.Input(shape=input_shape)
     
-    # Initial convolution
-    x = layers.Conv2D(64, 7, strides=2, padding='same')(inputs)
+    # Simpler initial convolution
+    x = layers.Conv2D(32, 3, padding='same')(inputs)
     x = layers.BatchNormalization()(x)
-    x = layers.Activation('selu')(x)
-    x = layers.MaxPooling2D(3, strides=2, padding='same')(x)
+    x = layers.Activation('relu')(x)
+    x = layers.MaxPooling2D()(x)
     
-    # Progressive blocks
-    filter_sizes = [64, 128, 256, 512]
-    for filters in filter_sizes:
-        # First residual block
-        identity = x
+    # Simpler progression
+    for filters in [64, 128, 256]:
         x = layers.Conv2D(filters, 3, padding='same')(x)
         x = layers.BatchNormalization()(x)
-        x = layers.Activation('selu')(x)
-        x = layers.SpatialDropout2D(0.1)(x)
-        x = layers.Conv2D(filters, 3, padding='same')(x)
-        x = layers.BatchNormalization()(x)
-        
-        if identity.shape[-1] != filters:
-            identity = layers.Conv2D(filters, 1, padding='same')(identity)
-        x = layers.Add()([x, identity])
-        x = layers.Activation('selu')(x)
-        
-        # Second residual block
-        identity = x
-        x = layers.Conv2D(filters, 3, padding='same')(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.Activation('selu')(x)
-        x = layers.SpatialDropout2D(0.1)(x)
-        x = layers.Conv2D(filters, 3, padding='same')(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.Add()([x, identity])
-        x = layers.Activation('selu')(x)
-        
-        # Attention mechanism
-        channels = x.shape[-1]
-        attention = layers.GlobalAveragePooling2D()(x)
-        attention = layers.Dense(channels // 16, activation='selu')(attention)
-        attention = layers.Dense(channels, activation='sigmoid')(attention)
-        attention = layers.Reshape((1, 1, channels))(attention)
-        x = layers.Multiply()([x, attention])
-        
-        if filters != filter_sizes[-1]:
-            x = layers.MaxPooling2D(2)(x)
+        x = layers.Activation('relu')(x)
+        x = layers.MaxPooling2D()(x)
+        x = layers.Dropout(0.25)(x)
     
     x = layers.GlobalAveragePooling2D()(x)
-    x = layers.Dense(1024, activation='selu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))(x)
-    x = layers.BatchNormalization()(x)
+    x = layers.Dense(512, activation='relu')(x)
     x = layers.Dropout(0.5)(x)
     outputs = layers.Dense(num_classes, activation='softmax')(x)
     
@@ -190,22 +157,29 @@ def train_improved_model(X_train, y_train, X_valid, y_valid, batch_size=16):
     y_train_cat = tf.keras.utils.to_categorical(y_train)
     y_valid_cat = tf.keras.utils.to_categorical(y_valid)
     
-    # Create and compile model with optimal initial learning rate
+    # Create and compile model
     model = create_improved_model()
     model.compile(
-        optimizer=Adam(learning_rate=2e-5, clipnorm=1.0),  # Added gradient clipping
+        optimizer=Adam(
+            learning_rate=1e-3,  # Higher initial learning rate
+            beta_1=0.9,
+            beta_2=0.999,
+            epsilon=1e-07,
+            weight_decay=1e-5  # Add weight decay
+        ),
         loss='categorical_crossentropy',
         metrics=['accuracy']
     )
 
-    # Data augmentation
+    # Modified data augmentation
     train_datagen = tf.keras.preprocessing.image.ImageDataGenerator(
-        rotation_range=20,
-        width_shift_range=0.2,
-        height_shift_range=0.2,
-        zoom_range=0.2,
+        rotation_range=10,  # Reduced rotation
+        width_shift_range=0.1,  # Reduced shift
+        height_shift_range=0.1,  # Reduced shift
+        brightness_range=[0.9, 1.1],  # Added brightness variation
+        zoom_range=0.1,  # Reduced zoom
         horizontal_flip=True,
-        vertical_flip=True,
+        vertical_flip=False,  # Removed vertical flip
         fill_mode='nearest'
     )
 
@@ -215,13 +189,30 @@ def train_improved_model(X_train, y_train, X_valid, y_valid, batch_size=16):
         batch_size=batch_size
     )
 
+    # Modified callbacks
+    callbacks = [
+        tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=20,  # Increased patience
+            restore_best_weights=True,
+            min_delta=0.01  # Added minimum improvement threshold
+        ),
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,  # Less aggressive reduction
+            patience=10,  # More patience before reducing
+            min_lr=1e-6,
+            verbose=1
+        )
+    ]
+
     # Train the model
     history = model.fit(
         train_generator,
         steps_per_epoch=len(X_train) // batch_size,
         epochs=100,
         validation_data=(X_valid, y_valid_cat),
-        callbacks=create_training_callbacks()
+        callbacks=callbacks
     )
     
     return model, history
@@ -286,6 +277,7 @@ def main():
 
     # Apply SMOTE
     print("\nApplying SMOTE for class balancing...")
+    # Reshape maintaining aspect ratio / flatens images 
     X_train_reshaped = X_train.reshape(X_train.shape[0], -1)
     smote = SMOTE(random_state=42)
     X_train_resampled, y_train_resampled = smote.fit_resample(X_train_reshaped, y_train)
@@ -302,9 +294,14 @@ def main():
         batch_size=8
     )
 
-    # Save model
-    model.save('lung_cancer_improved_cnn_complete.h5')
-    print("Model saved as lung_cancer_improved_cnn_complete.h5")
+    # Define model directory
+    model_dir = "/Users/andresfelipecastellanos/LungCancerAI/models"
+    os.makedirs(model_dir, exist_ok=True)
+
+    # Save model with full path
+    model_path = os.path.join(model_dir, 'lung_cancer_improved2_cnn_complete.h5')
+    model.save(model_path)
+    print(f"Model saved as {model_path}")
 
     return model, history, X_valid, y_valid
 
@@ -315,14 +312,14 @@ if __name__ == "__main__":
         print("Model training was not completed due to earlier errors.")
         exit()
 
-    # Evaluate with TTA
-    print("\nEvaluating model with Test Time Augmentation...")
-    val_predictions = []
-    for i in range(len(X_valid)):
-        pred = predict_with_tta(model, X_valid[i])
-        val_predictions.append(pred)
-    val_predictions = np.array(val_predictions)
+    # Evaluate model
+    print("\nEvaluating model...")
+    val_predictions = model.predict(X_valid, batch_size=32)
     val_pred_classes = np.argmax(val_predictions, axis=1)
+    
+    # Convert one-hot encoded labels back to class indices if needed
+    if len(y_valid.shape) > 1:  # If y_valid is one-hot encoded
+        y_valid = np.argmax(y_valid, axis=1)
 
     # Print classification report
     target_names = ['Benign', 'Malignant', 'Normal']
